@@ -3,6 +3,7 @@ from twscrape import API, gather
 import os
 import json
 from datetime import datetime as dt
+from openai import AsyncOpenAI
 
 
 def get_cookies():
@@ -103,7 +104,7 @@ async def get_user_data(api, user_dict, cache_dir, fetch_limit, replies_limit):
 			return None
 
 
-def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
+async def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
 	total_posts = 0
 	total_replies = 0
 	processed_users = 0
@@ -165,6 +166,51 @@ def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
 	print(f"Aggregation complete: Processed {processed_users} users, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
 
 
+async def generate_avatars(cache_dir):
+	client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+	processed_users = 0
+	failed_users = 0
+	for filename in os.listdir(cache_dir):
+		if filename.endswith('.md'):
+			processed_users += 1
+			md_path = os.path.join(cache_dir, filename)
+			with open(md_path, 'r', encoding='utf-8') as f:
+				md_content = f.read()
+
+			username = filename.split('-')[0]  # Extract username from filename (e.g., '12345-data.md')
+			try:
+				response = await client.chat.completions.create(
+					model="gpt-4o-mini",
+					messages=[
+						{"role": "system", "content": """
+You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively. Output JSON with:
+- "username": The user's username.
+- "demographics": {"location": from profile, "bio_keywords": top 3-5 nouns/phrases from bio, "joined_year": year from joined date}.
+- "interests": Top 5 topics/keywords from posts/replies, weighted by frequency and likes.
+- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views, "top_post": {highest-liked post’s rawContent and likes}}.
+- "tone": Dominant tone of posts/replies (e.g., informative, humorous, critical).
+- "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount}.
+Input:
+{markdown_content}
+Output JSON only.
+"""},
+						{"role": "user", "content": md_content}
+					],
+					response_format={"type": "json_object"}
+				)
+				avatar = json.loads(response.choices[0].message.content)
+				avatar_path = os.path.join(cache_dir, filename.replace('.md', '-avatar.json'))
+				with open(avatar_path, 'w', encoding='utf-8') as f:
+					# noinspection PyTypeChecker
+					json.dump(avatar, f, indent=4)
+				print(f"Generated avatar for @{username}")
+			except Exception as e:
+				print(f"Failed to generate avatar for @{username}: {str(e)}")
+				failed_users += 1
+
+	print(f"Avatar generation complete: Processed {processed_users} users, {failed_users} failed")
+
+
 async def main(target_username, include_self):
 	os.makedirs('input', exist_ok=True)
 	os.makedirs('output', exist_ok=True)
@@ -207,7 +253,8 @@ async def main(target_username, include_self):
 		print(f"Processed {idx}/{len(follow_all)} users")
 	print(f"Summary: Processed {len(user_datas)} users, {skipped_users} skipped, {total_tweets} tweets, {total_replies} replies")
 
-	aggregate_to_markdown('output/users', min_likes_posts=2, min_likes_replies=2)
+	await aggregate_to_markdown('output/users', min_likes_posts=2, min_likes_replies=2)
+	await generate_avatars('output/users')
 
 
 if __name__ == "__main__":
