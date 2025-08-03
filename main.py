@@ -42,6 +42,22 @@ async def get_following(api, user_id, cache_file):
 		return following_dicts
 
 
+async def get_follow_all(followers, following, cache_file):
+	if os.path.exists(cache_file):
+		print("Using cached follow-all")
+		with open(cache_file, 'r', encoding='utf-8') as f:
+			return json.load(f)
+	else:
+		print("Creating follow-all union")
+		# Union by ID to remove duplicates
+		follow_all_dict = {user['id']: user for user in followers + following}
+		follow_all = list(follow_all_dict.values())
+		with open(cache_file, 'w', encoding='utf-8') as f:
+			# noinspection PyTypeChecker
+			json.dump(follow_all, f, indent=4, default=lambda o: o.isoformat() if isinstance(o, dt) else o)
+		return follow_all
+
+
 async def main(target_username):
 	api = API(pool='input/accounts.db')
 
@@ -59,6 +75,10 @@ async def main(target_username):
 	cache_file_following = f"output/{target_username}-following.json"
 	following = await get_following(api, user.id, cache_file_following)
 	print(f"Got {len(following)} following")
+
+	cache_file_follow_all = f"output/{target_username}-follow-all.json"
+	follow_all = await get_follow_all(followers, following, cache_file_follow_all)
+	print(f"Got {len(follow_all)} unique users in follow-all")
 
 
 if __name__ == "__main__":
