@@ -42,7 +42,7 @@ async def get_following(api, user_id, cache_file):
 		return following_dicts
 
 
-async def get_follow_all(followers, following, target_user, cache_file, include_self=True):
+async def get_follow_all(followers, following, target_user, cache_file, include_self):
 	if os.path.exists(cache_file):
 		print("Using cached follow-all")
 		with open(cache_file, 'r', encoding='utf-8') as f:
@@ -61,7 +61,42 @@ async def get_follow_all(followers, following, target_user, cache_file, include_
 		return follow_all
 
 
-async def main(target_username, include_self=True):
+async def get_user_data(api, user_dict, cache_dir, fetch_limit, replies_limit):
+	os.makedirs(cache_dir, exist_ok=True)
+	user_id = user_dict['id']
+	cache_file = f"{cache_dir}/{user_id}-data.json"
+	if os.path.exists(cache_file):
+		print(f"Using cached data for @{user_dict['username']}")
+		with open(cache_file, 'r', encoding='utf-8') as f:
+			return json.load(f)
+	else:
+		print(f"Fetching tweets for @{user_dict['username']}")
+		tweets = await gather(api.user_tweets(user_id, limit=fetch_limit))
+		tweets_dicts = [tweet.dict() for tweet in tweets]
+		for t in tweets_dicts:
+			t.pop('media', None)
+			t.pop('user', None)
+			if replies_limit == -1:
+				t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id']))]
+			elif replies_limit > 0:
+				t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id'], limit=replies_limit))]
+			else:
+				t['replies'] = []
+			for r in t.get('replies', []):
+				r.pop('media', None)
+				r.pop('user', None)
+		user_data = {
+			'profile': user_dict,
+			'tweets': tweets_dicts
+		}
+		with open(cache_file, 'w', encoding='utf-8') as f:
+			# noinspection PyTypeChecker
+			json.dump(user_data, f, indent=4, default=lambda o: o.isoformat() if isinstance(o, dt) else o)
+		await asyncio.sleep(1)
+		return user_data
+
+
+async def main(target_username, include_self):
 	os.makedirs('input', exist_ok=True)
 	os.makedirs('output', exist_ok=True)
 	os.makedirs('output/users', exist_ok=True)
@@ -73,6 +108,7 @@ async def main(target_username, include_self=True):
 
 	print(f"Target user: @{target_username}")
 	user = await api.user_by_login(target_username)
+	print(f"User ID: {user.id}")
 
 	cache_file_followers = f"output/{target_username}-followers.json"
 	followers = await get_followers(api, user.id, cache_file_followers)
@@ -85,6 +121,13 @@ async def main(target_username, include_self=True):
 	cache_file_follow_all = f"output/{target_username}-follow-all.json"
 	follow_all = await get_follow_all(followers, following, user, cache_file_follow_all, include_self)
 	print(f"Got {len(follow_all)} unique users in follow-all")
+
+	print("Processing user data...")
+	user_datas = []
+	for idx, user in enumerate(follow_all, 1):
+		user_data = await get_user_data(api, user, cache_dir='output/users', fetch_limit=10, replies_limit=5)
+		user_datas.append(user_data)
+		print(f"Processed {idx}/{len(follow_all)} users")
 
 
 if __name__ == "__main__":
