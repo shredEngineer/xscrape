@@ -78,9 +78,9 @@ async def get_user_data(api, user_dict, cache_dir, fetch_limit, replies_limit):
 			for t in tweets_dicts:
 				t.pop('media', None)
 				t.pop('user', None)
-				if replies_limit == -1:
+				if replies_limit == -1 and t.get('replyCount', 0) > 0:
 					t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id']))]
-				elif replies_limit > 0:
+				elif replies_limit > 0 and t.get('replyCount', 0) > 0:
 					t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id'], limit=replies_limit))]
 				else:
 					t['replies'] = []
@@ -96,7 +96,7 @@ async def get_user_data(api, user_dict, cache_dir, fetch_limit, replies_limit):
 				# noinspection PyTypeChecker
 				json.dump(user_data, f, indent=4, default=lambda o: o.isoformat() if isinstance(o, dt) else o)
 			print(f"Fetched {len(tweets_dicts)} tweets, {total_replies} replies for @{user_dict['username']}")
-			await asyncio.sleep(1)
+			await asyncio.sleep(2)
 			return user_data
 		except Exception as e:
 			print(f"Error fetching data for @{user_dict['username']}: {str(e)}")
@@ -135,7 +135,7 @@ async def main(target_username, include_self):
 	total_replies = 0
 	skipped_users = 0
 	for idx, user in enumerate(follow_all, 1):
-		user_data = await get_user_data(api, user, cache_dir='output/users', fetch_limit=10, replies_limit=5)
+		user_data = await get_user_data(api, user, cache_dir='output/users', fetch_limit=20, replies_limit=5)
 		if user_data:
 			user_datas.append(user_data)
 			total_tweets += len(user_data['tweets'])
