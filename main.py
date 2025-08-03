@@ -42,15 +42,18 @@ async def get_following(api, user_id, cache_file):
 		return following_dicts
 
 
-async def get_follow_all(followers, following, cache_file):
+async def get_follow_all(followers, following, target_user, cache_file, include_self=True):
 	if os.path.exists(cache_file):
 		print("Using cached follow-all")
 		with open(cache_file, 'r', encoding='utf-8') as f:
 			return json.load(f)
 	else:
 		print("Creating follow-all union")
-		# Union by ID to remove duplicates
-		follow_all_dict = {user['id']: user for user in followers + following}
+		users = followers + following
+		if include_self:
+			print(f"Including target user: @{target_user.username}")
+			users.append(target_user.dict())
+		follow_all_dict = {user['id']: user for user in users}
 		follow_all = list(follow_all_dict.values())
 		with open(cache_file, 'w', encoding='utf-8') as f:
 			# noinspection PyTypeChecker
@@ -58,15 +61,18 @@ async def get_follow_all(followers, following, cache_file):
 		return follow_all
 
 
-async def main(target_username):
+async def main(target_username, include_self=True):
+	os.makedirs('input', exist_ok=True)
+	os.makedirs('output', exist_ok=True)
+	os.makedirs('output/users', exist_ok=True)
+
 	api = API(pool='input/accounts.db')
 
 	await api.pool.add_account("unused", "unused", "unused@example.com", "unused", cookies=get_cookies())
 	await api.pool.login_all()
 
-	print(f"User name: @{target_username}")
+	print(f"Target user: @{target_username}")
 	user = await api.user_by_login(target_username)
-	print(f"User ID: {user.id}")
 
 	cache_file_followers = f"output/{target_username}-followers.json"
 	followers = await get_followers(api, user.id, cache_file_followers)
@@ -77,9 +83,9 @@ async def main(target_username):
 	print(f"Got {len(following)} following")
 
 	cache_file_follow_all = f"output/{target_username}-follow-all.json"
-	follow_all = await get_follow_all(followers, following, cache_file_follow_all)
+	follow_all = await get_follow_all(followers, following, user, cache_file_follow_all, include_self)
 	print(f"Got {len(follow_all)} unique users in follow-all")
 
 
 if __name__ == "__main__":
-	asyncio.run(main(target_username="drxwilhelm"))
+	asyncio.run(main(target_username="drxwilhelm", include_self=True))
