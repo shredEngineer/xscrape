@@ -71,29 +71,36 @@ async def get_user_data(api, user_dict, cache_dir, fetch_limit, replies_limit):
 			return json.load(f)
 	else:
 		print(f"Fetching tweets for @{user_dict['username']}")
-		tweets = await gather(api.user_tweets(user_id, limit=fetch_limit))
-		tweets_dicts = [tweet.dict() for tweet in tweets]
-		for t in tweets_dicts:
-			t.pop('media', None)
-			t.pop('user', None)
-			if replies_limit == -1:
-				t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id']))]
-			elif replies_limit > 0:
-				t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id'], limit=replies_limit))]
-			else:
-				t['replies'] = []
-			for r in t.get('replies', []):
-				r.pop('media', None)
-				r.pop('user', None)
-		user_data = {
-			'profile': user_dict,
-			'tweets': tweets_dicts
-		}
-		with open(cache_file, 'w', encoding='utf-8') as f:
-			# noinspection PyTypeChecker
-			json.dump(user_data, f, indent=4, default=lambda o: o.isoformat() if isinstance(o, dt) else o)
-		await asyncio.sleep(1)
-		return user_data
+		try:
+			tweets = await gather(api.user_tweets(user_id, limit=fetch_limit))
+			tweets_dicts = [tweet.dict() for tweet in tweets]
+			total_replies = 0
+			for t in tweets_dicts:
+				t.pop('media', None)
+				t.pop('user', None)
+				if replies_limit == -1:
+					t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id']))]
+				elif replies_limit > 0:
+					t['replies'] = [reply.dict() for reply in await gather(api.tweet_replies(t['id'], limit=replies_limit))]
+				else:
+					t['replies'] = []
+				for r in t.get('replies', []):
+					r.pop('media', None)
+					r.pop('user', None)
+				total_replies += len(t['replies'])
+			user_data = {
+				'profile': user_dict,
+				'tweets': tweets_dicts
+			}
+			with open(cache_file, 'w', encoding='utf-8') as f:
+				# noinspection PyTypeChecker
+				json.dump(user_data, f, indent=4, default=lambda o: o.isoformat() if isinstance(o, dt) else o)
+			print(f"Fetched {len(tweets_dicts)} tweets, {total_replies} replies for @{user_dict['username']}")
+			await asyncio.sleep(1)
+			return user_data
+		except Exception as e:
+			print(f"Error fetching data for @{user_dict['username']}: {str(e)}")
+			return None
 
 
 async def main(target_username, include_self):
@@ -124,10 +131,19 @@ async def main(target_username, include_self):
 
 	print("Processing user data...")
 	user_datas = []
+	total_tweets = 0
+	total_replies = 0
+	skipped_users = 0
 	for idx, user in enumerate(follow_all, 1):
 		user_data = await get_user_data(api, user, cache_dir='output/users', fetch_limit=10, replies_limit=5)
-		user_datas.append(user_data)
+		if user_data:
+			user_datas.append(user_data)
+			total_tweets += len(user_data['tweets'])
+			total_replies += sum(len(t['replies']) for t in user_data['tweets'])
+		else:
+			skipped_users += 1
 		print(f"Processed {idx}/{len(follow_all)} users")
+	print(f"Summary: Processed {len(user_datas)} users, {skipped_users} skipped, {total_tweets} tweets, {total_replies} replies")
 
 
 if __name__ == "__main__":
