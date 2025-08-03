@@ -1,6 +1,5 @@
 import asyncio
 from twscrape import API, gather
-
 import os
 import json
 from datetime import datetime as dt
@@ -28,6 +27,21 @@ async def get_followers(api, user_id, cache_file):
 		return follower_dicts
 
 
+async def get_following(api, user_id, cache_file):
+	if os.path.exists(cache_file):
+		print("Using cached following")
+		with open(cache_file, 'r', encoding='utf-8') as f:
+			return json.load(f)
+	else:
+		print("Fetching following")
+		following = await gather(api.following(user_id))
+		following_dicts = [following.dict() for following in following]
+		with open(cache_file, 'w', encoding='utf-8') as f:
+			# noinspection PyTypeChecker
+			json.dump(following_dicts, f, indent=4, default=lambda o: o.isoformat() if isinstance(o, dt) else o)
+		return following_dicts
+
+
 async def main(target_username):
 	api = API(pool='input/accounts.db')
 
@@ -38,9 +52,13 @@ async def main(target_username):
 	user = await api.user_by_login(target_username)
 	print(f"User ID: {user.id}")
 
-	cache_file = f"output/{target_username}-followers.json"
-	followers = await get_followers(api, user.id, cache_file)
+	cache_file_followers = f"output/{target_username}-followers.json"
+	followers = await get_followers(api, user.id, cache_file_followers)
 	print(f"Got {len(followers)} followers")
+
+	cache_file_following = f"output/{target_username}-following.json"
+	following = await get_following(api, user.id, cache_file_following)
+	print(f"Got {len(following)} following")
 
 
 if __name__ == "__main__":
