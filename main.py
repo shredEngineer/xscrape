@@ -103,6 +103,68 @@ async def get_user_data(api, user_dict, cache_dir, fetch_limit, replies_limit):
 			return None
 
 
+def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
+	total_posts = 0
+	total_replies = 0
+	processed_users = 0
+	for filename in os.listdir(cache_dir):
+		if filename.endswith('.json'):
+			processed_users += 1
+			json_path = os.path.join(cache_dir, filename)
+			with open(json_path, 'r', encoding='utf-8') as f:
+				data = json.load(f)
+
+			profile = data['profile']
+			tweets = sorted(data['tweets'], key=lambda t: dt.fromisoformat(t['date']), reverse=True)  # Newest first
+
+			md_content = f"# Profile: @{profile['username']}\n"
+			md_content += f"Bio: {profile['rawDescription']}\n"
+			md_content += f"Location: {profile['location']}\n"
+			md_content += f"Joined: {profile['created']}\n"
+			md_content += f"Followers: {profile['followersCount']}\n"
+			md_content += f"Following: {profile['friendsCount']}\n"
+			md_content += f"Tweets: {profile['statusesCount']}\n"
+			md_content += f"Likes: {profile['favouritesCount']}\n"
+			md_content += f"Verified: {profile['verified']}\n"
+			md_content += f"Blue: {profile['blue']}\n\n"
+
+			included_posts = 0
+			included_replies = 0
+			for tweet in tweets:
+				if tweet['likeCount'] >= min_likes_posts:
+					included_posts += 1
+					md_content += f"# Post by @{profile['username']} at {tweet['date']} (likes: {tweet['likeCount']}, retweets: {tweet['retweetCount']}, replies: {tweet['replyCount']}, views: {tweet['viewCount']})\n"
+					md_content += f"{tweet['rawContent']}\n"
+					if tweet['hashtags']:
+						md_content += f"Hashtags: {', '.join(tweet['hashtags'])}\n"
+					if tweet['mentionedUsers']:
+						md_content += f"Mentions: {', '.join('@' + u['username'] for u in tweet['mentionedUsers'])}\n"
+					if tweet['links']:
+						md_content += f"Links: {', '.join(l['text'] for l in tweet['links'])}\n"
+					if tweet.get('possibly_sensitive', False):
+						md_content += "(Possibly sensitive)\n"
+					md_content += "\n"
+					for reply in tweet['replies']:
+						if reply['likeCount'] >= min_likes_replies:
+							included_replies += 1
+							md_content += f"## Reply at {reply['date']} (likes: {reply['likeCount']}, retweets: {reply['retweetCount']}, views: {reply['viewCount']})\n"
+							md_content += f"{reply['rawContent']}\n"
+							if reply.get('possibly_sensitive', False):
+								md_content += "(Possibly sensitive)\n"
+							md_content += "\n"
+
+			md_filename = filename.replace('.json', '.md')
+			md_path = os.path.join(cache_dir, md_filename)
+			with open(md_path, 'w', encoding='utf-8') as f:
+				f.write(md_content)
+
+			print(f"Aggregated @{profile['username']}: Included {included_posts} posts, {included_replies} replies")
+			total_posts += included_posts
+			total_replies += included_replies
+
+	print(f"Aggregation complete: Processed {processed_users} users, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
+
+
 async def main(target_username, include_self):
 	os.makedirs('input', exist_ok=True)
 	os.makedirs('output', exist_ok=True)
@@ -144,6 +206,8 @@ async def main(target_username, include_self):
 			skipped_users += 1
 		print(f"Processed {idx}/{len(follow_all)} users")
 	print(f"Summary: Processed {len(user_datas)} users, {skipped_users} skipped, {total_tweets} tweets, {total_replies} replies")
+
+	aggregate_to_markdown('output/users', min_likes_posts=2, min_likes_replies=2)
 
 
 if __name__ == "__main__":
