@@ -4,3 +4,4 @@ input/*.txt
 output/*.json
 output/users/*.json
 output/users/*.md
+output/avatars/*.json

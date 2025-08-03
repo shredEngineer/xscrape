@@ -108,65 +108,74 @@ async def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
 	total_posts = 0
 	total_replies = 0
 	processed_users = 0
+	skipped_users = 0
 	for filename in os.listdir(cache_dir):
 		if filename.endswith('.json'):
-			processed_users += 1
 			json_path = os.path.join(cache_dir, filename)
-			with open(json_path, 'r', encoding='utf-8') as f:
-				data = json.load(f)
+			try:
+				with open(json_path, 'r', encoding='utf-8') as f:
+					data = json.load(f)
+				if 'profile' not in data:
+					print(f"Skipping invalid JSON file {filename}: missing 'profile' key")
+					skipped_users += 1
+					continue
+				profile = data['profile']
+				tweets = sorted(data['tweets'], key=lambda t: dt.fromisoformat(t['date']), reverse=True)  # Newest first
+				processed_users += 1
 
-			profile = data['profile']
-			tweets = sorted(data['tweets'], key=lambda t: dt.fromisoformat(t['date']), reverse=True)  # Newest first
+				md_content = f"# Profile: @{profile['username']}\n"
+				md_content += f"Bio: {profile['rawDescription']}\n"
+				md_content += f"Location: {profile['location']}\n"
+				md_content += f"Joined: {profile['created']}\n"
+				md_content += f"Followers: {profile['followersCount']}\n"
+				md_content += f"Following: {profile['friendsCount']}\n"
+				md_content += f"Tweets: {profile['statusesCount']}\n"
+				md_content += f"Likes: {profile['favouritesCount']}\n"
+				md_content += f"Verified: {profile['verified']}\n"
+				md_content += f"Blue: {profile['blue']}\n\n"
 
-			md_content = f"# Profile: @{profile['username']}\n"
-			md_content += f"Bio: {profile['rawDescription']}\n"
-			md_content += f"Location: {profile['location']}\n"
-			md_content += f"Joined: {profile['created']}\n"
-			md_content += f"Followers: {profile['followersCount']}\n"
-			md_content += f"Following: {profile['friendsCount']}\n"
-			md_content += f"Tweets: {profile['statusesCount']}\n"
-			md_content += f"Likes: {profile['favouritesCount']}\n"
-			md_content += f"Verified: {profile['verified']}\n"
-			md_content += f"Blue: {profile['blue']}\n\n"
+				included_posts = 0
+				included_replies = 0
+				for tweet in tweets:
+					if tweet['likeCount'] >= min_likes_posts:
+						included_posts += 1
+						md_content += f"# Post by @{profile['username']} at {tweet['date']} (likes: {tweet['likeCount']}, retweets: {tweet['retweetCount']}, replies: {tweet['replyCount']}, views: {tweet['viewCount']})\n"
+						md_content += f"{tweet['rawContent']}\n"
+						if tweet['hashtags']:
+							md_content += f"Hashtags: {', '.join(tweet['hashtags'])}\n"
+						if tweet['mentionedUsers']:
+							md_content += f"Mentions: {', '.join('@' + u['username'] for u in tweet['mentionedUsers'])}\n"
+						if tweet['links']:
+							md_content += f"Links: {', '.join(l['text'] for l in tweet['links'])}\n"
+						if tweet.get('possibly_sensitive', False):
+							md_content += "(Possibly sensitive)\n"
+						md_content += "\n"
+						for reply in tweet['replies']:
+							if reply['likeCount'] >= min_likes_replies:
+								included_replies += 1
+								md_content += f"## Reply at {reply['date']} (likes: {reply['likeCount']}, retweets: {reply['retweetCount']}, views: {reply['viewCount']})\n"
+								md_content += f"{reply['rawContent']}\n"
+								if reply.get('possibly_sensitive', False):
+									md_content += "(Possibly sensitive)\n"
+								md_content += "\n"
 
-			included_posts = 0
-			included_replies = 0
-			for tweet in tweets:
-				if tweet['likeCount'] >= min_likes_posts:
-					included_posts += 1
-					md_content += f"# Post by @{profile['username']} at {tweet['date']} (likes: {tweet['likeCount']}, retweets: {tweet['retweetCount']}, replies: {tweet['replyCount']}, views: {tweet['viewCount']})\n"
-					md_content += f"{tweet['rawContent']}\n"
-					if tweet['hashtags']:
-						md_content += f"Hashtags: {', '.join(tweet['hashtags'])}\n"
-					if tweet['mentionedUsers']:
-						md_content += f"Mentions: {', '.join('@' + u['username'] for u in tweet['mentionedUsers'])}\n"
-					if tweet['links']:
-						md_content += f"Links: {', '.join(l['text'] for l in tweet['links'])}\n"
-					if tweet.get('possibly_sensitive', False):
-						md_content += "(Possibly sensitive)\n"
-					md_content += "\n"
-					for reply in tweet['replies']:
-						if reply['likeCount'] >= min_likes_replies:
-							included_replies += 1
-							md_content += f"## Reply at {reply['date']} (likes: {reply['likeCount']}, retweets: {reply['retweetCount']}, views: {reply['viewCount']})\n"
-							md_content += f"{reply['rawContent']}\n"
-							if reply.get('possibly_sensitive', False):
-								md_content += "(Possibly sensitive)\n"
-							md_content += "\n"
+				md_filename = filename.replace('.json', '.md')
+				md_path = os.path.join(cache_dir, md_filename)
+				with open(md_path, 'w', encoding='utf-8') as f:
+					f.write(md_content)
 
-			md_filename = filename.replace('.json', '.md')
-			md_path = os.path.join(cache_dir, md_filename)
-			with open(md_path, 'w', encoding='utf-8') as f:
-				f.write(md_content)
+				print(f"Aggregated @{profile['username']}: Included {included_posts} posts, {included_replies} replies")
+				total_posts += included_posts
+				total_replies += included_replies
+			except Exception as e:
+				print(f"Skipping invalid JSON file {filename}: {str(e)}")
+				skipped_users += 1
 
-			print(f"Aggregated @{profile['username']}: Included {included_posts} posts, {included_replies} replies")
-			total_posts += included_posts
-			total_replies += included_replies
-
-	print(f"Aggregation complete: Processed {processed_users} users, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
+	print(f"Aggregation complete: Processed {processed_users} users, {skipped_users} skipped, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
 
 
-async def generate_avatars(cache_dir):
+async def generate_avatars(cache_dir, avatar_dir):
+	os.makedirs(avatar_dir, exist_ok=True)
 	client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 	processed_users = 0
 	failed_users = 0
@@ -177,18 +186,19 @@ async def generate_avatars(cache_dir):
 			with open(md_path, 'r', encoding='utf-8') as f:
 				md_content = f.read()
 
-			username = filename.split('-')[0]  # Extract username from filename (e.g., '12345-data.md')
+			user_id = filename.split('-')[0]  # Extract user_id from filename (e.g., '12345-data.md')
 			try:
 				response = await client.chat.completions.create(
-					model="gpt-4o-mini",
+					model="gpt-4o",
 					messages=[
 						{"role": "system", "content": """
-You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively. Output JSON with:
+You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style. Output JSON with:
 - "username": The user's username.
-- "demographics": {"location": from profile, "bio_keywords": top 3-5 nouns/phrases from bio, "joined_year": year from joined date}.
-- "interests": Top 5 topics/keywords from posts/replies, weighted by frequency and likes.
-- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views, "top_post": {highest-liked post’s rawContent and likes}}.
-- "tone": Dominant tone of posts/replies (e.g., informative, humorous, critical).
+- "demographics": {"location": from profile, "bio_keywords": top 10 nouns/phrases from bio or all if fewer, "joined_year": year from joined date}.
+- "personality": {"traits": 5-10 personality traits (e.g., curious, witty, analytical, passionate) based on posts/replies, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous)}.
+- "interests": Top 20 topics/keywords from posts/replies, weighted by frequency and likes.
+- "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags, "mentions": all unique mentioned usernames}.
+- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views, "top_posts": list of top 3 posts by likes with rawContent, likes, and date}.
 - "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount}.
 Input:
 {markdown_content}
@@ -199,13 +209,13 @@ Output JSON only.
 					response_format={"type": "json_object"}
 				)
 				avatar = json.loads(response.choices[0].message.content)
-				avatar_path = os.path.join(cache_dir, filename.replace('.md', '-avatar.json'))
+				avatar_path = os.path.join(avatar_dir, f"{user_id}-avatar.json")
 				with open(avatar_path, 'w', encoding='utf-8') as f:
 					# noinspection PyTypeChecker
 					json.dump(avatar, f, indent=4)
-				print(f"Generated avatar for @{username}")
+				print(f"Generated avatar for @{avatar['username']}")
 			except Exception as e:
-				print(f"Failed to generate avatar for @{username}: {str(e)}")
+				print(f"Failed to generate avatar for user_id {user_id}: {str(e)}")
 				failed_users += 1
 
 	print(f"Avatar generation complete: Processed {processed_users} users, {failed_users} failed")
@@ -215,6 +225,7 @@ async def main(target_username, include_self):
 	os.makedirs('input', exist_ok=True)
 	os.makedirs('output', exist_ok=True)
 	os.makedirs('output/users', exist_ok=True)
+	os.makedirs('output/avatars', exist_ok=True)
 
 	api = API(pool='input/accounts.db')
 
@@ -254,7 +265,7 @@ async def main(target_username, include_self):
 	print(f"Summary: Processed {len(user_datas)} users, {skipped_users} skipped, {total_tweets} tweets, {total_replies} replies")
 
 	await aggregate_to_markdown('output/users', min_likes_posts=2, min_likes_replies=2)
-	await generate_avatars('output/users')
+	await generate_avatars('output/users', 'output/avatars')
 
 
 if __name__ == "__main__":
