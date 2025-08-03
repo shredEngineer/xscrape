@@ -183,14 +183,14 @@ async def generate_avatars(cache_dir, avatar_dir):
 		if filename.endswith('.md'):
 			user_id = filename.split('-')[0]  # Extract user_id from filename (e.g., '12345-data.md')
 			avatar_path = os.path.join(avatar_dir, f"{user_id}-avatar.json")
-			if os.path.exists(avatar_path):
+			md_path = os.path.join(cache_dir, filename)
+			if os.path.exists(avatar_path) and os.path.getmtime(avatar_path) >= os.path.getmtime(md_path):
 				print(f"Using cached avatar for {user_id}")
 				with open(avatar_path, 'r', encoding='utf-8') as f:
 					json.load(f)  # Load to verify, but not needed for processing
 				processed_users += 1
 				continue
 			processed_users += 1
-			md_path = os.path.join(cache_dir, filename)
 			with open(md_path, 'r', encoding='utf-8') as f:
 				md_content = f.read()
 			try:
@@ -200,11 +200,11 @@ async def generate_avatars(cache_dir, avatar_dir):
 						{"role": "system", "content": """
 You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON with:
 - "username": The user's username.
-- "demographics": {"location": from profile, "bio_keywords": top 10 nouns/phrases from bio or all if fewer with brief evidence, "joined_year": year from joined date}.
-- "personality": {"traits": 7-10 personality traits (e.g., curious, witty, analytical, passionate) with brief evidence from posts/replies, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous), heavily weighted by replies}.
-- "interests": All relevant topics/keywords from posts/replies, weighted by frequency and likes, prioritizing reply content due to its volume, cross-referenced with hashtags.
-- "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags, "mentions": all unique mentioned usernames}.
-- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views, "top_posts": list of top 3 posts by likes with rawContent, likes, retweets, views, and date}.
+- "demographics": {"location": from profile, "bio_keywords": all meaningful nouns/phrases from bio, up to 10, with brief evidence, "joined_year": year from joined date}.
+- "personality": {"traits": 7-10 personality traits (e.g., curious, witty, analytical, passionate) with brief evidence from posts/replies, including specific reply examples for each trait, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous), heavily weighted by replies}.
+- "interests": Every relevant topic/keyword from posts/replies, with no upper limit, primarily extracted from reply content due to its volume, weighted by frequency and likes, cross-referenced with hashtags.
+- "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags from posts/replies, "mentions": all unique mentioned usernames}.
+- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views (set to 0 if missing), "top_posts": list of top 3 posts by likes with rawContent, likes, retweets, views, and date}.
 - "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount, "time_range": earliest to latest post date}.
 Input:
 {markdown_content}
@@ -215,7 +215,6 @@ Output JSON only.
 					response_format={"type": "json_object"}
 				)
 				avatar = json.loads(response.choices[0].message.content)
-				avatar_path = os.path.join(avatar_dir, f"{user_id}-avatar.json")
 				with open(avatar_path, 'w', encoding='utf-8') as f:
 					# noinspection PyTypeChecker
 					json.dump(avatar, f, indent=4)
@@ -225,6 +224,36 @@ Output JSON only.
 				failed_users += 1
 
 	print(f"Avatar generation complete: Processed {processed_users} users, {failed_users} failed")
+
+
+async def aggregate_avatars(avatar_dir, target_username):
+	output_file = f"output/{target_username}-avatars.json"
+	avatar_files = [f for f in os.listdir(avatar_dir) if f.endswith('-avatar.json')]
+	if os.path.exists(output_file) and all(os.path.getmtime(os.path.join(avatar_dir, f)) <= os.path.getmtime(output_file) for f in avatar_files):
+		print(f"Using cached aggregated avatars at {output_file}")
+		with open(output_file, 'r', encoding='utf-8') as f:
+			return json.load(f)
+	else:
+		print("Aggregating avatars...")
+		avatars = []
+		processed_avatars = 0
+		failed_avatars = 0
+		for filename in avatar_files:
+			avatar_path = os.path.join(avatar_dir, filename)
+			try:
+				with open(avatar_path, 'r', encoding='utf-8') as f:
+					avatar = json.load(f)
+				avatars.append(avatar)
+				print(f"Aggregated avatar for {avatar['username']}")
+				processed_avatars += 1
+			except Exception as e:
+				print(f"Failed to aggregate avatar for {filename}: {str(e)}")
+				failed_avatars += 1
+		with open(output_file, 'w', encoding='utf-8') as f:
+			# noinspection PyTypeChecker
+			json.dump(avatars, f, indent=4)
+		print(f"Aggregation complete: Processed {processed_avatars} avatars, {failed_avatars} failed, saved to {output_file}")
+		return avatars
 
 
 async def main(target_username, include_self):
@@ -272,6 +301,7 @@ async def main(target_username, include_self):
 
 	await aggregate_to_markdown('output/users', min_likes_posts=2, min_likes_replies=2)
 	await generate_avatars('output/users', 'output/avatars')
+	await aggregate_avatars('output/avatars', target_username)
 
 
 if __name__ == "__main__":
