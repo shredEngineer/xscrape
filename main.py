@@ -181,25 +181,31 @@ async def generate_avatars(cache_dir, avatar_dir):
 	failed_users = 0
 	for filename in os.listdir(cache_dir):
 		if filename.endswith('.md'):
+			user_id = filename.split('-')[0]  # Extract user_id from filename (e.g., '12345-data.md')
+			avatar_path = os.path.join(avatar_dir, f"{user_id}-avatar.json")
+			if os.path.exists(avatar_path):
+				print(f"Using cached avatar for {user_id}")
+				with open(avatar_path, 'r', encoding='utf-8') as f:
+					json.load(f)  # Load to verify, but not needed for processing
+				processed_users += 1
+				continue
 			processed_users += 1
 			md_path = os.path.join(cache_dir, filename)
 			with open(md_path, 'r', encoding='utf-8') as f:
 				md_content = f.read()
-
-			user_id = filename.split('-')[0]  # Extract user_id from filename (e.g., '12345-data.md')
 			try:
 				response = await client.chat.completions.create(
-					model="gpt-4o",
+					model="gpt-4.1-2025-04-14",
 					messages=[
 						{"role": "system", "content": """
-You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style. Output JSON with:
+You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON with:
 - "username": The user's username.
-- "demographics": {"location": from profile, "bio_keywords": top 10 nouns/phrases from bio or all if fewer, "joined_year": year from joined date}.
-- "personality": {"traits": 5-10 personality traits (e.g., curious, witty, analytical, passionate) based on posts/replies, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous)}.
-- "interests": Top 20 topics/keywords from posts/replies, weighted by frequency and likes.
+- "demographics": {"location": from profile, "bio_keywords": top 10 nouns/phrases from bio or all if fewer with brief evidence, "joined_year": year from joined date}.
+- "personality": {"traits": 7-10 personality traits (e.g., curious, witty, analytical, passionate) with brief evidence from posts/replies, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous), heavily weighted by replies}.
+- "interests": All relevant topics/keywords from posts/replies, weighted by frequency and likes, prioritizing reply content due to its volume, cross-referenced with hashtags.
 - "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags, "mentions": all unique mentioned usernames}.
-- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views, "top_posts": list of top 3 posts by likes with rawContent, likes, and date}.
-- "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount}.
+- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views, "top_posts": list of top 3 posts by likes with rawContent, likes, retweets, views, and date}.
+- "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount, "time_range": earliest to latest post date}.
 Input:
 {markdown_content}
 Output JSON only.
@@ -213,7 +219,7 @@ Output JSON only.
 				with open(avatar_path, 'w', encoding='utf-8') as f:
 					# noinspection PyTypeChecker
 					json.dump(avatar, f, indent=4)
-				print(f"Generated avatar for @{avatar['username']}")
+				print(f"Generated avatar for {avatar['username']}")
 			except Exception as e:
 				print(f"Failed to generate avatar for user_id {user_id}: {str(e)}")
 				failed_users += 1
