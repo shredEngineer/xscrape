@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Dict, Optional
 import backoff
+from pydantic import field_validator
 
 
 # Pydantic models for structured output
@@ -24,6 +25,16 @@ class TopPost(BaseModel):
 	retweets: int = Field(..., ge=0, description="Number of retweets")
 	views: int = Field(..., ge=0, description="Number of views, 0 if missing")
 	date: str = Field(..., description="ISO format date of the post")
+
+	@classmethod
+	@field_validator("likes", "retweets", "views", mode="before")
+	def cast_to_int(cls, v: int | float | str | None) -> int:
+		if v is None:
+			return 0
+		try:
+			return int(float(v))
+		except Exception:
+			raise ValueError(f"Invalid numeric value: {v}")
 
 class Avatar(BaseModel):
 	username: str = Field(..., description="The user's username")
@@ -204,24 +215,44 @@ async def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
 	print(f"Aggregation complete: Processed {processed_users} users, {skipped_users} skipped, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
 
 
-async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int = 10) -> None:
+async def generate_avatars(
+		cache_dir: str,
+		avatar_dir: str,
+		max_concurrent: int = 10
+) -> None:
+	"""
+	Generates Twitter audience avatars using OpenAI Structured Outputs with strict schema enforcement.
+
+	Args:
+		cache_dir: Directory containing per-user Markdown files.
+		avatar_dir: Output directory for avatar JSONs.
+		max_concurrent: Maximum concurrent OpenAI requests.
+	"""
 	os.makedirs(avatar_dir, exist_ok=True)
 	client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-	semaphore = asyncio.Semaphore(max_concurrent)  # Limit concurrent requests
+	semaphore = asyncio.Semaphore(max_concurrent)
 	processed_users = 0
 	failed_users = 0
-	tasks = []
 
-	print("Generating avatars...")
+	# System prompt for content (Schema enforcement ist via Pydantic model!)
+	system_prompt = (
+		"You will analyze a user's Twitter profile and content. "
+		"Prioritize high-quality insight into their personality, communication habits, and interests. "
+		"Use replies as primary signal for personality and interaction style due to their high volume. "
+		"Extract detailed and specific interests (e.g. 'quantum biology', not 'science'), weighted by frequency and engagement. "
+		"Traits must be justified by specific quotes or paraphrased evidence. "
+		"For content summaries, describe themes and tone. "
+		"For engagement, summarize post popularity and include the 3 most liked posts. "
+		"All fields must be filled as richly and precisely as the data allows."
+	)
 
-	# Backoff decorator for retrying on rate limit errors
 	@backoff.on_exception(
 		backoff.expo,
-		exception=(Exception,),  # Replace with specific OpenAI rate limit exception if available
+		exception=(Exception,),
 		max_tries=5,
 		max_time=300
 	)
-	async def process_user(_filename: str, _semaphore: asyncio.Semaphore) -> Optional[tuple[str, Dict]]:
+	async def process_user(_filename: str) -> Optional[tuple[str, dict]]:
 		nonlocal processed_users, failed_users
 		if not _filename.endswith('.md'):
 			return None
@@ -230,124 +261,51 @@ async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int 
 		avatar_path = os.path.join(avatar_dir, f"{_user_id}-avatar.json")
 		if os.path.exists(avatar_path):
 			print(f"Using cached avatar for user_id {_user_id}")
-			with open(avatar_path, 'r', encoding='utf-8') as f:
-				json.load(f)  # Verify file
 			processed_users += 1
 			return None
 
-		async with _semaphore:
+		async with semaphore:
 			processed_users += 1
 			with open(os.path.join(cache_dir, _filename), 'r', encoding='utf-8') as f:
 				md_content = f.read()
-
 			try:
-				print(f"Starting avatar generation for user_id {_user_id}")
-				response = await client.chat.completions.create(
+				print(f"Generating avatar for user_id {_user_id}")
+				response = await client.chat.completions.parse(
 					model="gpt-4.1-2025-04-14",
 					messages=[
-						{
-							"role": "system",
-							"content": """
-You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON with:
-- "username": The user's username.
-- "demographics": {"location": from profile, "bio_keywords": all meaningful nouns/phrases from bio, up to 10, with brief evidence, "joined_year": year from joined date}.
-- "personality": {"traits": 7-10 personality traits (e.g., curious, witty, analytical, passionate) with brief evidence from posts/replies, including specific reply examples for each trait, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous), heavily weighted by replies}.
-- "interests": Every single relevant topic/keyword from posts/replies, with no upper limit, primarily extracted from reply content due to its volume, ensuring all niche and specific terms are included for SEO optimization, weighted by frequency and likes, sorted by relevance, cross-referenced with hashtags.
-- "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags from posts/replies, "mentions": all unique mentioned usernames}.
-- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views (set to 0 if missing), "top_posts": list of top 3 posts by likes with rawContent, likes, retweets, views, and date}.
-- "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount, "time_range": earliest to latest post date}.
-Rules:
-- For "engagement.top_posts", ensure "likes", "retweets", and "views" are integers. If "views" is unavailable in the input data, set it to 0.
-- Ensure all numeric fields are valid numbers and not null.
-- Do not include null values in "top_posts" fields unless explicitly allowed.
-Input:
-{markdown_content}
-Output JSON only, strictly adhering to the following schema:
-
-{
-	"username": str,
-	"demographics": {
-		"location": str,
-		"bio_keywords": [{"keyword": str, "evidence": str}],
-		"joined_year": int
-	},
-	"personality": {
-		"traits": [{"trait": str, "evidence": str}],
-		"content_style": str,
-		"interaction_style": str
-	},
-	"interests": [str],
-	"content_summary": {
-		"posts": str,
-		"replies": str,
-		"hashtags": [str],
-		"mentions": [str]
-	},
-	"engagement": {
-		"avg_likes": float,
-		"avg_retweets": float,
-		"avg_views": float,
-		"top_posts": [{"rawContent": str, "likes": int, "retweets": int, "views": int, "date": str}]
-	},
-	"activity": {
-		"post_count": int,
-		"reply_count": int,
-		"total_statuses": int,
-		"time_range": str
-	}
-}
-"""
-						},
+						{"role": "system", "content": system_prompt},
 						{"role": "user", "content": md_content}
 					],
-					response_format={"type": "json_object"}
+					response_format=Avatar,
+					temperature=0.4,
 				)
-				print(f"Received response from GPT-4.1 for user_id {_user_id}")
-				raw_avatar = json.loads(response.choices[0].message.content)
 
-				# Normalize top_posts to ensure valid integers
-				if 'engagement' in raw_avatar and 'top_posts' in raw_avatar['engagement']:
-					for post in raw_avatar['engagement']['top_posts']:
-						post['likes'] = int(post.get('likes', 0))
-						post['retweets'] = int(post.get('retweets', 0))
-						post['views'] = int(post.get('views', 0))  # Default to 0 if None or missing
-
-				# Validate with Pydantic
-				_avatar = Avatar(**raw_avatar)
-
+				_avatar = response.choices[0].message.parsed
+				_avatar = Avatar.model_validate(_avatar)
 				with open(avatar_path, 'w', encoding='utf-8') as f:
-					# noinspection PyTypeChecker
-					json.dump(_avatar.model_dump(), f, indent=4)
-				print(f"Generated avatar for {_avatar.username}")
+					f.write(_avatar.model_dump_json(indent=4))
+				print(f"Generated avatar for @{_avatar.username}")
 				return (_user_id, _avatar.model_dump())
 			except ValidationError as ve:
-				print(f"Validation error for user_id {_user_id}: {str(ve)}")
-				print(f"Raw API response: {raw_avatar}")
+				print(f"Validation error for user_id {_user_id}: {ve}")
 				failed_users += 1
 				return None
 			except Exception as e:
-				print(f"Failed to generate avatar for user_id {_user_id}: {str(e)}")
-				print(f"Raw API response: {raw_avatar if 'raw_avatar' in locals() else 'Not received'}")
+				print(f"Error for user_id {_user_id}: {e}")
 				failed_users += 1
-				raise  # Re-raise for backoff to handle retries
+				raise
 
-	# Collect tasks for all users
-	for filename in os.listdir(cache_dir):
-		tasks.append(process_user(filename, semaphore))
-
-	# Run tasks concurrently
+	tasks = [process_user(fn) for fn in os.listdir(cache_dir)]
 	results = await asyncio.gather(*tasks, return_exceptions=True)
 
-	# Process results (optional, for logging or further handling)
 	for result in results:
 		if isinstance(result, Exception):
-			print(f"Task failed with exception: {str(result)}")
-			failed_users += 1
-		elif result is not None:
+			print(f"Task failed: {result}")
+		elif result:
 			user_id, avatar = result
-			print(f"Completed processing for user_id {user_id}: @{avatar['username']}")
+			print(f"Completed user_id {user_id}: @{avatar['username']}")
 
-	print(f"Avatar generation complete: Processed {processed_users} users, {failed_users} failed")
+	print(f"Avatar generation complete: Processed {processed_users}, failed {failed_users}")
 
 
 async def aggregate_avatars(avatar_dir, target_username):
