@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
 import backoff
 from pydantic import field_validator
+from collections import Counter
 
-# Pydantic models for structured output (STATIC schema)
 
 class BioKeyword(BaseModel):
 	keyword: str = Field(..., description="A meaningful noun or phrase from the user's bio")
