@@ -2,6 +2,7 @@
 input/*.db
 input/*.txt
 output/*.json
+output/*.md
 output/users/*.json
 output/users/*.md
 output/avatars/*.json

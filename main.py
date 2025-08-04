@@ -4,6 +4,35 @@ import os
 import json
 from datetime import datetime as dt
 from openai import AsyncOpenAI
+from pydantic import BaseModel, Field, ValidationError
+from typing import List, Dict, Optional
+import backoff
+
+
+# Pydantic models for structured output
+class BioKeyword(BaseModel):
+	keyword: str = Field(..., description="A meaningful noun or phrase from the user's bio")
+	evidence: str = Field(..., description="Brief evidence supporting the keyword")
+
+class PersonalityTrait(BaseModel):
+	trait: str = Field(..., description="A personality trait (e.g., curious, witty)")
+	evidence: str = Field(..., description="Evidence from posts/replies, including specific reply examples")
+
+class TopPost(BaseModel):
+	rawContent: str = Field(..., description="The raw content of the post")
+	likes: int = Field(..., ge=0, description="Number of likes")
+	retweets: int = Field(..., ge=0, description="Number of retweets")
+	views: int = Field(..., ge=0, description="Number of views, 0 if missing")
+	date: str = Field(..., description="ISO format date of the post")
+
+class Avatar(BaseModel):
+	username: str = Field(..., description="The user's username")
+	demographics: Dict[str, str | List[BioKeyword] | int] = Field(..., description="Contains location, bio_keywords, joined_year")
+	personality: Dict[str, List[PersonalityTrait] | str] = Field(..., description="Contains traits, content_style, interaction_style")
+	interests: List[str] = Field(..., description="List of relevant topics/keywords from posts/replies")
+	content_summary: Dict[str, str | List[str]] = Field(..., description="Contains posts, replies, hashtags, mentions")
+	engagement: Dict[str, float | List[TopPost]] = Field(..., description="Contains avg_likes, avg_retweets, avg_views, top_posts")
+	activity: Dict[str, int | str] = Field(..., description="Contains post_count, reply_count, total_statuses, time_range")
 
 
 def get_cookies():
@@ -175,56 +204,129 @@ async def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
 	print(f"Aggregation complete: Processed {processed_users} users, {skipped_users} skipped, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
 
 
-async def generate_avatars(cache_dir, avatar_dir):
+async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int = 5) -> None:
 	os.makedirs(avatar_dir, exist_ok=True)
 	client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+	semaphore = asyncio.Semaphore(max_concurrent)  # Limit concurrent requests
 	processed_users = 0
 	failed_users = 0
+	tasks = []
+
 	print("Generating avatars...")
-	for filename in os.listdir(cache_dir):
-		if filename.endswith('.md'):
-			user_id = filename.split('-')[0]  # Extract user_id from filename (e.g., '12345-data.md')
-			avatar_path = os.path.join(avatar_dir, f"{user_id}-avatar.json")
-			if os.path.exists(avatar_path):
-				print(f"Using cached avatar for {user_id}")
-				with open(avatar_path, 'r', encoding='utf-8') as f:
-					json.load(f)  # Load to verify, but not needed for processing
-				processed_users += 1
-				continue
+
+	# Backoff decorator for retrying on rate limit errors
+	@backoff.on_exception(
+		backoff.expo,
+		exception=(Exception,),  # Replace with specific OpenAI rate limit exception if available
+		max_tries=5,
+		max_time=300
+	)
+	async def process_user(_filename: str, _semaphore: asyncio.Semaphore) -> Optional[tuple[str, Dict]]:
+		nonlocal processed_users, failed_users
+		if not _filename.endswith('.md'):
+			return None
+
+		_user_id = _filename.split('-')[0]
+		avatar_path = os.path.join(avatar_dir, f"{_user_id}-avatar.json")
+		if os.path.exists(avatar_path):
+			print(f"Using cached avatar for user_id {_user_id}")
+			with open(avatar_path, 'r', encoding='utf-8') as f:
+				json.load(f)  # Verify file
 			processed_users += 1
-			with open(os.path.join(cache_dir, filename), 'r', encoding='utf-8') as f:
+			return None
+
+		async with _semaphore:
+			processed_users += 1
+			with open(os.path.join(cache_dir, _filename), 'r', encoding='utf-8') as f:
 				md_content = f.read()
+
 			try:
-				print(f"Starting avatar generation for user_id {user_id}")
+				print(f"Starting avatar generation for user_id {_user_id}")
 				response = await client.chat.completions.create(
-					model="gpt-4.1-2025-04-14",
+					model="gpt-4.1-2025-04-14",  # Adjust to actual model
 					messages=[
-						{"role": "system", "content": """
-You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON with:
-- "username": The user's username.
-- "demographics": {"location": from profile, "bio_keywords": all meaningful nouns/phrases from bio, up to 10, with brief evidence, "joined_year": year from joined date}.
-- "personality": {"traits": 7-10 personality traits (e.g., curious, witty, analytical, passionate) with brief evidence from posts/replies, including specific reply examples for each trait, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous), heavily weighted by replies}.
-- "interests": Every single relevant topic/keyword from posts/replies, with no upper limit, primarily extracted from reply content due to its volume, ensuring all niche and specific terms are included for SEO optimization, weighted by frequency and likes, sorted by relevance, cross-referenced with hashtags.
-- "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags from posts/replies, "mentions": all unique mentioned usernames}.
-- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views (set to 0 if missing), "top_posts": list of top 3 posts by likes with rawContent, likes, retweets, views, and date}.
-- "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount, "time_range": earliest to latest post date}.
+						{
+							"role": "system",
+							"content": """
+You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON conforming to the following schema:
+
+{
+	"username": str,
+	"demographics": {
+		"location": str,
+		"bio_keywords": [{"keyword": str, "evidence": str}],
+		"joined_year": int
+	},
+	"personality": {
+		"traits": [{"trait": str, "evidence": str}],
+		"content_style": str,
+		"interaction_style": str
+	},
+	"interests": [str],
+	"content_summary": {
+		"posts": str,
+		"replies": str,
+		"hashtags": [str],
+		"mentions": [str]
+	},
+	"engagement": {
+		"avg_likes": float,
+		"avg_retweets": float,
+		"avg_views": float,
+		"top_posts": [{"rawContent": str, "likes": int, "retweets": int, "views": int, "date": str}]
+	},
+	"activity": {
+		"post_count": int,
+		"reply_count": int,
+		"total_statuses": int,
+		"time_range": str
+	}
+}
+
 Input:
 {markdown_content}
-Output JSON only.
-"""},
+Output JSON only, strictly adhering to the schema.
+"""
+						},
 						{"role": "user", "content": md_content}
 					],
 					response_format={"type": "json_object"}
 				)
-				print(f"Received response from GPT-4.1 for user_id {user_id}")
-				avatar = json.loads(response.choices[0].message.content)
+				print(f"Received response from GPT-4.1 for user_id {_user_id}")
+				raw_avatar = json.loads(response.choices[0].message.content)
+
+				# Validate with Pydantic
+				_avatar = Avatar(**raw_avatar)
+
 				with open(avatar_path, 'w', encoding='utf-8') as f:
 					# noinspection PyTypeChecker
-					json.dump(avatar, f, indent=4)
-				print(f"Generated avatar for {avatar['username']}")
-			except Exception as e:
-				print(f"Failed to generate avatar for user_id {user_id}: {str(e)}")
+					json.dump(_avatar.model_dump(), f, indent=4)
+				print(f"Generated avatar for {_avatar.username}")
+				return (_user_id, _avatar.model_dump())
+			except ValidationError as ve:
+				print(f"Validation error for user_id {_user_id}: {str(ve)}")
 				failed_users += 1
+				return None
+			except Exception as e:
+				print(f"Failed to generate avatar for user_id {_user_id}: {str(e)}")
+				failed_users += 1
+				raise  # Re-raise for backoff to handle retries
+
+	# Collect tasks for all users
+	for filename in os.listdir(cache_dir):
+		tasks.append(process_user(filename, semaphore))
+
+	# Run tasks concurrently
+	results = await asyncio.gather(*tasks, return_exceptions=True)
+
+	# Process results (optional, for logging or further handling)
+	for result in results:
+		if isinstance(result, Exception):
+			print(f"Task failed with exception: {str(result)}")
+			failed_users += 1
+		elif result is not None:
+			user_id, avatar = result
+			print(f"Completed processing for user_id {user_id}: @{avatar['username']}")
 
 	print(f"Avatar generation complete: Processed {processed_users} users, {failed_users} failed")
 
@@ -252,6 +354,94 @@ async def aggregate_avatars(avatar_dir, target_username):
 		json.dump(avatars, f, indent=4)
 	print(f"Aggregation complete: Processed {processed_avatars} avatars, {failed_avatars} failed, saved to {output_file}")
 	return avatars
+
+
+async def aggregate_avatars_lite(avatars: List[Dict], target_username: str) -> None:
+	output_file = f"output/{target_username}-avatars-lite.md"
+	print(f"Starting generation of lite avatars markdown to {output_file}")
+	try:
+		with open(output_file, 'w', encoding='utf-8') as f:
+			print(f"Opened output file: {output_file}")
+			if not isinstance(avatars, list):
+				print(f"Error: Input 'avatars' is not a list, got type {type(avatars)}: {avatars}")
+				raise ValueError("Input 'avatars' must be a list")
+			print(f"Processing {len(avatars)} avatars")
+
+			for idx, avatar in enumerate(avatars, 1):
+				print(f"Processing avatar {idx}/{len(avatars)}")
+				if not isinstance(avatar, dict):
+					print(f"Error: Avatar {idx} is not a dictionary, got type {type(avatar)}: {avatar}")
+					raise ValueError(f"Avatar {idx} is not a dictionary")
+
+				username = avatar.get('username', 'Unknown')
+				print(f"Username: @{username}")
+				f.write(f"# @{username}\n\n")
+
+				# Bio Keywords
+				demographics = avatar.get('demographics', {})
+				bio_keywords = demographics.get('bio_keywords', [])
+				print(f"Found {len(bio_keywords)} bio keywords")
+				f.write("## Bio Keywords\n\n")
+				for kw in bio_keywords:
+					keyword = kw.get('keyword', '')
+					evidence = kw.get('evidence', '')
+					if not keyword:
+						print(f"Error: Missing 'keyword' in bio keyword: {kw}")
+						raise ValueError(f"Missing 'keyword' in bio keyword for @{username}: {kw}")
+					print(f"Writing bio keyword: {keyword}")
+					f.write(f"- {keyword}: {evidence}\n")
+				f.write("\n")
+
+				# Personality Traits
+				personality = avatar.get('personality', {})
+				traits = personality.get('traits', [])
+				print(f"Found {len(traits)} personality traits")
+				f.write("## Personality Traits\n\n")
+				for trait in traits:
+					trait_name = trait.get('trait', '')
+					evidence = trait.get('evidence', '')
+					if not trait_name:
+						print(f"Error: Missing 'trait' in trait: {trait}")
+						raise ValueError(f"Missing 'trait' in trait for @{username}: {trait}")
+					print(f"Writing trait: {trait_name}")
+					f.write(f"- {trait_name}: {evidence}\n")
+				f.write("\n")
+
+				# Interests
+				interests = avatar.get('interests', [])
+				print(f"Found {len(interests)} interests")
+				f.write("## Interests\n\n")
+				for interest in interests:
+					print(f"Writing interest: {interest}")
+					f.write(f"- {interest}\n")
+				f.write("\n")
+
+				# Posts Summary
+				content_summary = avatar.get('content_summary', {})
+				posts_summary = content_summary.get('posts', '')
+				print(f"Writing posts summary: {posts_summary}")
+				f.write("## Posts Summary\n\n")
+				f.write(f"{posts_summary}\n\n")
+
+				# Replies Summary
+				replies_summary = content_summary.get('replies', '')
+				print(f"Writing replies summary: {replies_summary}")
+				f.write("## Replies Summary\n\n")
+				f.write(f"{replies_summary}\n\n")
+
+				# Hashtags
+				hashtags = content_summary.get('hashtags', [])
+				print(f"Found {len(hashtags)} hashtags")
+				f.write("## Hashtags\n\n")
+				for ht in hashtags:
+					print(f"Writing hashtag: #{ht}")
+					f.write(f"- #{ht}\n")
+				f.write("\n")
+
+		print(f"Lite avatars markdown generation complete: saved to {output_file}")
+	except Exception as e:
+		print(f"Failed to generate lite avatars markdown: {str(e)}")
+		raise
 
 
 async def main(target_username, include_self):
@@ -299,7 +489,8 @@ async def main(target_username, include_self):
 
 	await aggregate_to_markdown('output/users', min_likes_posts=2, min_likes_replies=2)
 	await generate_avatars('output/users', 'output/avatars')
-	await aggregate_avatars('output/avatars', target_username)
+	avatars = await aggregate_avatars('output/avatars', target_username)
+	await aggregate_avatars_lite(avatars, target_username)
 
 
 if __name__ == "__main__":
