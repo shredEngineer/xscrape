@@ -243,7 +243,7 @@ async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int 
 			try:
 				print(f"Starting avatar generation for user_id {_user_id}")
 				response = await client.chat.completions.create(
-					model="gpt-4.1-2025-04-14",  # Adjust to actual model
+					model="gpt-4.1-2025-04-14",
 					messages=[
 						{
 							"role": "system",
@@ -283,6 +283,11 @@ You are given a markdown file with a user's profile, posts, and replies. Create 
 	}
 }
 
+Rules:
+- For "engagement.top_posts", ensure "likes", "retweets", and "views" are integers. If "views" is unavailable in the input data, set it to 0.
+- Ensure all numeric fields are valid numbers and not null.
+- Do not include null values in "top_posts" fields unless explicitly allowed.
+
 Input:
 {markdown_content}
 Output JSON only, strictly adhering to the schema.
@@ -295,6 +300,13 @@ Output JSON only, strictly adhering to the schema.
 				print(f"Received response from GPT-4.1 for user_id {_user_id}")
 				raw_avatar = json.loads(response.choices[0].message.content)
 
+				# Normalize top_posts to ensure valid integers
+				if 'engagement' in raw_avatar and 'top_posts' in raw_avatar['engagement']:
+					for post in raw_avatar['engagement']['top_posts']:
+						post['likes'] = int(post.get('likes', 0))
+						post['retweets'] = int(post.get('retweets', 0))
+						post['views'] = int(post.get('views', 0))  # Default to 0 if None or missing
+
 				# Validate with Pydantic
 				_avatar = Avatar(**raw_avatar)
 
@@ -305,10 +317,12 @@ Output JSON only, strictly adhering to the schema.
 				return (_user_id, _avatar.model_dump())
 			except ValidationError as ve:
 				print(f"Validation error for user_id {_user_id}: {str(ve)}")
+				print(f"Raw API response: {raw_avatar}")
 				failed_users += 1
 				return None
 			except Exception as e:
 				print(f"Failed to generate avatar for user_id {_user_id}: {str(e)}")
+				print(f"Raw API response: {raw_avatar if 'raw_avatar' in locals() else 'Not received'}")
 				failed_users += 1
 				raise  # Re-raise for backoff to handle retries
 
