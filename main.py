@@ -204,7 +204,7 @@ async def aggregate_to_markdown(cache_dir, min_likes_posts, min_likes_replies):
 	print(f"Aggregation complete: Processed {processed_users} users, {skipped_users} skipped, included {total_posts} posts, {total_replies} replies with min_likes_posts={min_likes_posts}, min_likes_replies={min_likes_replies}")
 
 
-async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int = 5) -> None:
+async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int = 10) -> None:
 	os.makedirs(avatar_dir, exist_ok=True)
 	client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 	semaphore = asyncio.Semaphore(max_concurrent)  # Limit concurrent requests
@@ -248,7 +248,21 @@ async def generate_avatars(cache_dir: str, avatar_dir: str, max_concurrent: int 
 						{
 							"role": "system",
 							"content": """
-You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON conforming to the following schema:
+You are given a markdown file with a user's profile, posts, and replies. Create an audience avatar by analyzing the content objectively, emphasizing personality traits and content style, with heavy weight on replies due to their high volume. Output JSON with:
+- "username": The user's username.
+- "demographics": {"location": from profile, "bio_keywords": all meaningful nouns/phrases from bio, up to 10, with brief evidence, "joined_year": year from joined date}.
+- "personality": {"traits": 7-10 personality traits (e.g., curious, witty, analytical, passionate) with brief evidence from posts/replies, including specific reply examples for each trait, "content_style": summary of post style (e.g., conversational, technical, poetic), "interaction_style": summary of reply behavior (e.g., supportive, debate-heavy, humorous), heavily weighted by replies}.
+- "interests": Every single relevant topic/keyword from posts/replies, with no upper limit, primarily extracted from reply content due to its volume, ensuring all niche and specific terms are included for SEO optimization, weighted by frequency and likes, sorted by relevance, cross-referenced with hashtags.
+- "content_summary": {"posts": summary of all posts' content (themes, style), "replies": summary of all replies' content (themes, interactions), "hashtags": all unique hashtags from posts/replies, "mentions": all unique mentioned usernames}.
+- "engagement": {"avg_likes": average likes across posts, "avg_retweets": average retweets, "avg_views": average views (set to 0 if missing), "top_posts": list of top 3 posts by likes with rawContent, likes, retweets, views, and date}.
+- "activity": {"post_count": number of posts, "reply_count": number of replies, "total_statuses": profile’s statusesCount, "time_range": earliest to latest post date}.
+Rules:
+- For "engagement.top_posts", ensure "likes", "retweets", and "views" are integers. If "views" is unavailable in the input data, set it to 0.
+- Ensure all numeric fields are valid numbers and not null.
+- Do not include null values in "top_posts" fields unless explicitly allowed.
+Input:
+{markdown_content}
+Output JSON only, strictly adhering to the following schema:
 
 {
 	"username": str,
@@ -282,15 +296,6 @@ You are given a markdown file with a user's profile, posts, and replies. Create 
 		"time_range": str
 	}
 }
-
-Rules:
-- For "engagement.top_posts", ensure "likes", "retweets", and "views" are integers. If "views" is unavailable in the input data, set it to 0.
-- Ensure all numeric fields are valid numbers and not null.
-- Do not include null values in "top_posts" fields unless explicitly allowed.
-
-Input:
-{markdown_content}
-Output JSON only, strictly adhering to the schema.
 """
 						},
 						{"role": "user", "content": md_content}
