@@ -371,7 +371,6 @@ async def aggregate_avatars_lite(avatars: list, target_username: str) -> None:
 	global_keyword_counter = Counter()
 
 	try:
-		# Keywords zählen
 		for avatar in avatars:
 			demographics = avatar.get('demographics', {})
 			bio_keywords = demographics.get('bio_keywords', [])
@@ -380,12 +379,19 @@ async def aggregate_avatars_lite(avatars: list, target_username: str) -> None:
 				if keyword:
 					global_keyword_counter[keyword] += 1
 
-		with open(output_file, 'w', encoding='utf-8') as f:
-			# Union of Keywords als Markdown-Liste unter h1
-			f.write(f"# Keywords\n")
-			for keyword, count in global_keyword_counter.most_common():
-				f.write(f"- {keyword}\n")  # ({count})
+		print(f"Writing global bio keywords to {keywords_file}")
+		with open(keywords_file, 'w', encoding='utf-8') as f:
+			# noinspection PyTypeChecker
+			for kw in global_keyword_counter:
+				f.write(f"- {kw}\n")
+		print(f"Keyword aggregation done: {len(global_keyword_counter)} unique keywords")
 
+	except Exception as e:
+		print(f"Failed to generate keywords Markdown: {str(e)}")
+		raise
+
+	try:
+		with open(output_file, 'w', encoding='utf-8') as f:
 			for avatar in avatars:
 				username = avatar.get('username', 'Unknown')
 				demographics = avatar.get('demographics', {})
@@ -420,15 +426,8 @@ async def aggregate_avatars_lite(avatars: list, target_username: str) -> None:
 
 		print(f"Lite avatars markdown generation complete: saved to {output_file}")
 
-		# Zusätzlich Keywords-JSON
-		print(f"Writing global bio keywords to {keywords_file}")
-		with open(keywords_file, 'w', encoding='utf-8') as fkw:
-			# noinspection PyTypeChecker
-			json.dump(dict(global_keyword_counter.most_common()), fkw, indent=2, ensure_ascii=False)
-		print(f"Keyword aggregation done: {len(global_keyword_counter)} unique keywords")
-
 	except Exception as e:
-		print(f"Failed to generate lite avatars markdown: {str(e)}")
+		print(f"Failed to generate lite avatars Markdown: {str(e)}")
 		raise
 
 
