@@ -5,12 +5,12 @@ import json
 from datetime import datetime as dt
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, ValidationError
-from typing import List, Dict, Optional
+from typing import List, Optional
 import backoff
 from pydantic import field_validator
 
+# Pydantic models for structured output (STATIC schema)
 
-# Pydantic models for structured output
 class BioKeyword(BaseModel):
 	keyword: str = Field(..., description="A meaningful noun or phrase from the user's bio")
 	evidence: str = Field(..., description="Brief evidence supporting the keyword")
@@ -36,14 +36,42 @@ class TopPost(BaseModel):
 		except Exception:
 			raise ValueError(f"Invalid numeric value: {v}")
 
+class Demographics(BaseModel):
+	location: str = Field(..., description="User's stated location (city, country, etc.), or empty if not available")
+	bio_keywords: List[BioKeyword] = Field(..., description="Key nouns or phrases from the bio, with evidence for each")
+	joined_year: int = Field(..., description="The year the user joined Twitter")
+
+class Personality(BaseModel):
+	traits: List[PersonalityTrait] = Field(..., description="List of inferred personality traits, each with supporting evidence")
+	content_style: str = Field(..., description="Summary of writing style (e.g., concise, verbose, technical, humorous)")
+	interaction_style: str = Field(..., description="Summary of interaction style in replies/conversations (e.g., supportive, sarcastic, brief)")
+
+class ContentSummary(BaseModel):
+	posts: str = Field(..., description="Summary of the user's original posts: main themes, tone, and recurring motifs")
+	replies: str = Field(..., description="Summary of user's reply content: typical topics, attitudes, notable patterns")
+	hashtags: List[str] = Field(..., description="Frequently used hashtags, ordered by prominence")
+	mentions: List[str] = Field(..., description="Frequently mentioned usernames (no @), ordered by frequency")
+
+class Engagement(BaseModel):
+	avg_likes: float = Field(..., description="Average likes per post")
+	avg_retweets: float = Field(..., description="Average retweets per post")
+	avg_views: float = Field(..., description="Average views per post")
+	top_posts: List[TopPost] = Field(..., description="Top 3 posts by like count, descending order")
+
+class Activity(BaseModel):
+	post_count: int = Field(..., description="Number of original posts considered in analysis")
+	reply_count: int = Field(..., description="Number of replies considered in analysis")
+	total_statuses: int = Field(..., description="Total statuses as stated in profile (may exceed analyzed posts)")
+	time_range: str = Field(..., description="Date range of analyzed activity, e.g. '2020-02 to 2024-07'")
+
 class Avatar(BaseModel):
 	username: str = Field(..., description="The user's username")
-	demographics: Dict[str, str | List[BioKeyword] | int] = Field(..., description="Contains location, bio_keywords, joined_year")
-	personality: Dict[str, List[PersonalityTrait] | str] = Field(..., description="Contains traits, content_style, interaction_style")
-	interests: List[str] = Field(..., description="List of relevant topics/keywords from posts/replies")
-	content_summary: Dict[str, str | List[str]] = Field(..., description="Contains posts, replies, hashtags, mentions")
-	engagement: Dict[str, float | List[TopPost]] = Field(..., description="Contains avg_likes, avg_retweets, avg_views, top_posts")
-	activity: Dict[str, int | str] = Field(..., description="Contains post_count, reply_count, total_statuses, time_range")
+	demographics: Demographics = Field(..., description="Stated location, bio-derived keywords, year joined")
+	personality: Personality = Field(..., description="Personality traits, writing style, interaction style")
+	interests: List[str] = Field(..., description="Distinct interests or topics, ordered by frequency/importance")
+	content_summary: ContentSummary = Field(..., description="Summaries of posts, replies, hashtags, and mentions")
+	engagement: Engagement = Field(..., description="Averages and top posts for engagement")
+	activity: Activity = Field(..., description="Activity metrics and timespan of data analyzed")
 
 
 def get_cookies():
@@ -234,16 +262,17 @@ async def generate_avatars(
 	processed_users = 0
 	failed_users = 0
 
-	# System prompt for content (Schema enforcement ist via Pydantic model!)
 	system_prompt = (
-		"You will analyze a user's Twitter profile and content. "
-		"Prioritize high-quality insight into their personality, communication habits, and interests. "
-		"Use replies as primary signal for personality and interaction style due to their high volume. "
-		"Extract detailed and specific interests (e.g. 'quantum biology', not 'science'), weighted by frequency and engagement. "
-		"Traits must be justified by specific quotes or paraphrased evidence. "
-		"For content summaries, describe themes and tone. "
-		"For engagement, summarize post popularity and include the 3 most liked posts. "
-		"All fields must be filled as richly and precisely as the data allows."
+		"You are analyzing a Twitter user's public profile and recent content. "
+		"Fill every field with as much detail and specificity as the available data allows. "
+		"For demographics: extract and evidence meaningful bio keywords, parse location if present, and state the year joined. "
+		"For personality: infer multiple traits, each with specific supporting evidence (direct quotes or paraphrases); summarize writing style and interaction style with concrete examples. "
+		"For interests: list the most prominent topics or domains, focusing on specificity (e.g., 'quantum biology', not just 'science'), ordered by frequency and engagement. "
+		"For content summary: distill main themes and tone of posts and replies, and provide ranked lists of common hashtags and mentioned users. "
+		"For engagement: calculate averages, and provide the 3 most liked posts (in full, with stats). "
+		"For activity: state the post and reply counts, total status count from the profile, and the full date range of analyzed content. "
+		"If some aspect is missing or ambiguous, fill with '' or 0 as appropriate, but never omit a required field. "
+		"Be concise but information-rich in all summaries."
 	)
 
 	@backoff.on_exception(
@@ -283,6 +312,7 @@ async def generate_avatars(
 				_avatar = response.choices[0].message.parsed
 				_avatar = Avatar.model_validate(_avatar)
 				with open(avatar_path, 'w', encoding='utf-8') as f:
+					# noinspection PyTypeChecker
 					f.write(_avatar.model_dump_json(indent=4))
 				print(f"Generated avatar for @{_avatar.username}")
 				return (_user_id, _avatar.model_dump())
@@ -333,7 +363,7 @@ async def aggregate_avatars(avatar_dir, target_username):
 	return avatars
 
 
-async def aggregate_avatars_lite(avatars: List[Dict], target_username: str) -> None:
+async def aggregate_avatars_lite(avatars: List[dict], target_username: str) -> None:
 	output_file = f"output/{target_username}-avatars-lite.md"
 	print(f"Starting generation of lite avatars markdown to {output_file}")
 	try:
