@@ -363,89 +363,70 @@ async def aggregate_avatars(avatar_dir, target_username):
 	return avatars
 
 
-async def aggregate_avatars_lite(avatars: List[dict], target_username: str) -> None:
+async def aggregate_avatars_lite(avatars: list, target_username: str) -> None:
 	output_file = f"output/{target_username}-avatars-lite.md"
+	keywords_file = f"output/{target_username}-keywords.md"
 	print(f"Starting generation of lite avatars markdown to {output_file}")
+
+	global_keyword_counter = Counter()
+
 	try:
+		# Keywords zählen
+		for avatar in avatars:
+			demographics = avatar.get('demographics', {})
+			bio_keywords = demographics.get('bio_keywords', [])
+			for kw in bio_keywords:
+				keyword = kw.get('keyword', '')
+				if keyword:
+					global_keyword_counter[keyword] += 1
+
 		with open(output_file, 'w', encoding='utf-8') as f:
-			print(f"Opened output file: {output_file}")
-			if not isinstance(avatars, list):
-				print(f"Error: Input 'avatars' is not a list, got type {type(avatars)}: {avatars}")
-				raise ValueError("Input 'avatars' must be a list")
-			print(f"Processing {len(avatars)} avatars")
+			# Union of Keywords als Markdown-Liste unter h1
+			f.write(f"# Keywords\n")
+			for keyword, count in global_keyword_counter.most_common():
+				f.write(f"- {keyword}\n")  # ({count})
 
-			for idx, avatar in enumerate(avatars, 1):
-				print(f"Processing avatar {idx}/{len(avatars)}")
-				if not isinstance(avatar, dict):
-					print(f"Error: Avatar {idx} is not a dictionary, got type {type(avatar)}: {avatar}")
-					raise ValueError(f"Avatar {idx} is not a dictionary")
-
+			for avatar in avatars:
 				username = avatar.get('username', 'Unknown')
-				print(f"Username: @{username}")
-				f.write(f"# @{username}\n\n")
-
-				# Bio Keywords
 				demographics = avatar.get('demographics', {})
-				bio_keywords = demographics.get('bio_keywords', [])
-				print(f"Found {len(bio_keywords)} bio keywords")
-				f.write("## Bio Keywords\n\n")
-				for kw in bio_keywords:
-					keyword = kw.get('keyword', '')
-					evidence = kw.get('evidence', '')
-					if not keyword:
-						print(f"Error: Missing 'keyword' in bio keyword: {kw}")
-						raise ValueError(f"Missing 'keyword' in bio keyword for @{username}: {kw}")
-					print(f"Writing bio keyword: {keyword}")
-					f.write(f"- {keyword}: {evidence}\n")
-				f.write("\n")
-
-				# Personality Traits
+				location = demographics.get('location', '')
 				personality = avatar.get('personality', {})
 				traits = personality.get('traits', [])
-				print(f"Found {len(traits)} personality traits")
-				f.write("## Personality Traits\n\n")
-				for trait in traits:
-					trait_name = trait.get('trait', '')
-					evidence = trait.get('evidence', '')
-					if not trait_name:
-						print(f"Error: Missing 'trait' in trait: {trait}")
-						raise ValueError(f"Missing 'trait' in trait for @{username}: {trait}")
-					print(f"Writing trait: {trait_name}")
-					f.write(f"- {trait_name}: {evidence}\n")
-				f.write("\n")
-
-				# Interests
+				traits_str = ", ".join(
+					f"{trait.get('trait', '')}: {trait.get('evidence', '')}"
+					for trait in traits if trait.get('trait', '')
+				)
 				interests = avatar.get('interests', [])
-				print(f"Found {len(interests)} interests")
-				f.write("## Interests\n\n")
-				for interest in interests:
-					print(f"Writing interest: {interest}")
-					f.write(f"- {interest}\n")
-				f.write("\n")
-
-				# Posts Summary
+				interests_str = ", ".join(interests)
 				content_summary = avatar.get('content_summary', {})
 				posts_summary = content_summary.get('posts', '')
-				print(f"Writing posts summary: {posts_summary}")
-				f.write("## Posts Summary\n\n")
-				f.write(f"{posts_summary}\n\n")
-
-				# Replies Summary
 				replies_summary = content_summary.get('replies', '')
-				print(f"Writing replies summary: {replies_summary}")
-				f.write("## Replies Summary\n\n")
-				f.write(f"{replies_summary}\n\n")
-
-				# Hashtags
 				hashtags = content_summary.get('hashtags', [])
-				print(f"Found {len(hashtags)} hashtags")
-				f.write("## Hashtags\n\n")
-				for ht in hashtags:
-					print(f"Writing hashtag: #{ht}")
-					f.write(f"- #{ht}\n")
-				f.write("\n")
+				hashtags_str = ", ".join(f"#{ht.replace('#', '')}" for ht in hashtags)
+
+				f.write(f"# @{username}\n")
+				if location:
+					f.write(f"- *Location:* {location}\n")
+				if traits_str:
+					f.write(f"- *Personality:* {traits_str}\n")
+				if interests_str:
+					f.write(f"- *Interests:* {interests_str}\n")
+				if posts_summary:
+					f.write(f"- *Posts:* {posts_summary}\n")
+				if replies_summary:
+					f.write(f"- *Replies:* {replies_summary}\n")
+				if hashtags_str:
+					f.write(f"- *Hashtags:* {hashtags_str}\n")
 
 		print(f"Lite avatars markdown generation complete: saved to {output_file}")
+
+		# Zusätzlich Keywords-JSON
+		print(f"Writing global bio keywords to {keywords_file}")
+		with open(keywords_file, 'w', encoding='utf-8') as fkw:
+			# noinspection PyTypeChecker
+			json.dump(dict(global_keyword_counter.most_common()), fkw, indent=2, ensure_ascii=False)
+		print(f"Keyword aggregation done: {len(global_keyword_counter)} unique keywords")
+
 	except Exception as e:
 		print(f"Failed to generate lite avatars markdown: {str(e)}")
 		raise
