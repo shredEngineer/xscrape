@@ -6,3 +6,4 @@ output/*.md
 output/users/*.json
 output/users/*.md
 output/avatars/*.json
+*.pyc
